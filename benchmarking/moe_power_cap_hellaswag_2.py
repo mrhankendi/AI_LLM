@@ -234,52 +234,29 @@ with open(summary_file, "w", newline="") as f:
 ############################################
 # Plots
 ############################################
-batch_sizes_list = [row[0] for row in summary_results]
-accuracy_list = [row[1] for row in summary_results]
-tps_list = [row[2] for row in summary_results]
-power_list = [row[3] for row in summary_results]
-util_list = [row[5] for row in summary_results]
-tpw_list = [row[8] for row in summary_results]
+def plot_metric(metric_idx, ylabel, title, filename):
+    plt.figure()
+    for tp in sorted(set(r[0] for r in summary_results)):
+        for cap in sorted(set(r[1] for r in summary_results), key=lambda x: (x != "Default", x)):
+            bs_list = [r[2] for r in summary_results if r[0] == tp and r[1] == cap]
+            values = [r[metric_idx] for r in summary_results if r[0] == tp and r[1] == cap]
+            label = f"TP{tp} | {cap}W" if cap != "Default" else f"TP{tp} | Default"
+            plt.plot(bs_list, values, marker='o', label=label)
+    plt.xlabel("Batch Size")
+    plt.ylabel(ylabel)
+    plt.title(f"{title} ({args.model})")
+    plt.grid(True)
+    plt.legend()
+    plt.savefig(filename)
 
-plt.figure()
-plt.plot(batch_sizes_list, accuracy_list, marker='o')
-plt.xlabel("Batch Size")
-plt.ylabel("Accuracy (%)")
-plt.title(f"Accuracy vs Batch Size ({args.model})")
-plt.grid(True)
-plt.savefig(f"{args.model.replace('/', '_')}_accuracy_vs_batch_size.png")
+plot_metric(3, "Accuracy (%)", "Accuracy vs Batch Size", f"{args.model.replace('/', '_')}_accuracy_vs_batch_size.png")
+plot_metric(4, "Tokens/s", "Throughput vs Batch Size", f"{args.model.replace('/', '_')}_throughput_vs_batch_size.png")
+plot_metric(5, "Avg Total Power (W)", "Power vs Batch Size", f"{args.model.replace('/', '_')}_power_vs_batch_size.png")
+plot_metric(7, "Avg GPU Util (%)", "GPU Utilization vs Batch Size", f"{args.model.replace('/', '_')}_gpu_util_vs_batch_size.png")
+plot_metric(10, "Tokens/s/W", "Energy Efficiency vs Batch Size", f"{args.model.replace('/', '_')}_efficiency_vs_batch_size.png")
 
-plt.figure()
-plt.plot(batch_sizes_list, tps_list, marker='o')
-plt.xlabel("Batch Size")
-plt.ylabel("Tokens/s")
-plt.title(f"Throughput vs Batch Size ({args.model})")
-plt.grid(True)
-plt.savefig(f"{args.model.replace('/', '_')}_throughput_vs_batch_size.png")
-
-plt.figure()
-plt.plot(batch_sizes_list, power_list, marker='o')
-plt.xlabel("Batch Size")
-plt.ylabel("Avg Total Power (W)")
-plt.title(f"Power vs Batch Size ({args.model})")
-plt.grid(True)
-plt.savefig(f"{args.model.replace('/', '_')}_power_vs_batch_size.png")
-
-plt.figure()
-plt.plot(batch_sizes_list, util_list, marker='o')
-plt.xlabel("Batch Size")
-plt.ylabel("Avg GPU Util (%)")
-plt.title(f"GPU Utilization vs Batch Size ({args.model})")
-plt.grid(True)
-plt.savefig(f"{args.model.replace('/', '_')}_gpu_util_vs_batch_size.png")
-
-plt.figure()
-plt.plot(batch_sizes_list, tpw_list, marker='o')
-plt.xlabel("Batch Size")
-plt.ylabel("Tokens/s/W")
-plt.title(f"Energy Efficiency vs Batch Size ({args.model})")
-plt.grid(True)
-plt.savefig(f"{args.model.replace('/', '_')}_efficiency_vs_batch_size.png")
+print("\n=== Benchmark Complete ===")
+print(f"Summary saved to {summary_file}")
 
 print("\n=== Benchmark Complete ===")
 print(f"Summary saved to {summary_file}")
