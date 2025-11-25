@@ -382,13 +382,6 @@ def main():
         help="List of tensor parallel sizes to sweep",
     )
     parser.add_argument(
-        "--data-parallel-sizes",
-        type=int,
-        nargs="+",
-        default=[1],
-        help="List of data parallel sizes to sweep",
-    )
-    parser.add_argument(
         "--subset",
         type=str,
         default="validation",
@@ -481,255 +474,254 @@ def main():
     ############################################
     # Run benchmarks
     ############################################
-    for dp in args.data_parallel_sizes:
-        for tp in args.tensor_parallel_sizes:
-            for cap in args.power_caps:
-                set_power_cap(cap)
-                time.sleep(1)  # give driver a moment
-            for bs in args.batch_sizes:
-                cap_label = cap if cap > 0 else "Default"
-                print(
-                    f"\n=== TP {tp} | Power cap {cap_label} W | "
-                    f"Batch size {bs} | Time budget {args.time_budget}s ==="
-                    f"Expert Parallel: {args.enable_ep}"
-                )
 
-                llm = LLM(
-                    model=args.model,
-                    tensor_parallel_size=tp,
-                    data_parallel_size=dp,
-                    gpu_memory_utilization=args.gpu_util,
-                    max_model_len=args.max_len,
-                    trust_remote_code=True,
-                    enable_expert_parallel=args.enable_ep,
-                )
-                sampling_params = SamplingParams(
-                    temperature=0.0,
-                    max_tokens=5,
-                )
+    for tp in args.tensor_parallel_sizes:
+        for cap in args.power_caps:
+            set_power_cap(cap)
+            time.sleep(1)  # give driver a moment
+        for bs in args.batch_sizes:
+            cap_label = cap if cap > 0 else "Default"
+            print(
+                f"\n=== TP {tp} | Power cap {cap_label} W | "
+                f"Batch size {bs} | Time budget {args.time_budget}s ==="
+                f"Expert Parallel: {args.enable_ep}"
+            )
 
-                gpu_log = []
-                ipmi_log = []
+            llm = LLM(
+                model=args.model,
+                tensor_parallel_size=tp,
+                gpu_memory_utilization=args.gpu_util,
+                max_model_len=args.max_len,
+                trust_remote_code=True,
+                enable_expert_parallel=args.enable_ep,
+            )
+            sampling_params = SamplingParams(
+                temperature=0.0,
+                max_tokens=5,
+            )
 
-                total_tokens_ref = {"count": 0}
-                stop_flag = {"stop": False}
+            gpu_log = []
+            ipmi_log = []
 
-                # Start logging threads
-                gpu_thread = threading.Thread(
-                    target=log_gpu_power_util,
-                    args=(gpu_log, stop_flag, total_tokens_ref,
-                          args.gpu_log_interval),
-                    daemon=True,
-                )
-                ipmi_thread = threading.Thread(
-                    target=log_ipmi,
-                    args=(ipmi_log, stop_flag, args.ipmi_log_interval),
-                    daemon=True,
-                )
+            total_tokens_ref = {"count": 0}
+            stop_flag = {"stop": False}
 
-                gpu_thread.start()
-                ipmi_thread.start()
+            # Start logging threads
+            gpu_thread = threading.Thread(
+                target=log_gpu_power_util,
+                args=(gpu_log, stop_flag, total_tokens_ref,
+                        args.gpu_log_interval),
+                daemon=True,
+            )
+            ipmi_thread = threading.Thread(
+                target=log_ipmi,
+                args=(ipmi_log, stop_flag, args.ipmi_log_interval),
+                daemon=True,
+            )
 
-                start_time = time.time()
-                correct = 0
-                total_samples = 0
+            gpu_thread.start()
+            ipmi_thread.start()
 
-                idx = 0
-                n = len(prompts)
+            start_time = time.time()
+            correct = 0
+            total_samples = 0
 
-                # Fixed-duration loop: stop when either dataset is exhausted
-                # OR time budget is reached (if > 0).
-                while idx < n:
-                    if args.time_budget > 0.0:
-                        if time.time() - start_time >= args.time_budget:
-                            break
+            idx = 0
+            n = len(prompts)
 
-                    batch_prompts = prompts[idx: idx + bs]
-                    batch_answers = answers[idx: idx + bs]
-                    if not batch_prompts:
+            # Fixed-duration loop: stop when either dataset is exhausted
+            # OR time budget is reached (if > 0).
+            while idx < n:
+                if args.time_budget > 0.0:
+                    if time.time() - start_time >= args.time_budget:
                         break
 
-                    outputs = llm.generate(batch_prompts, sampling_params)
+                batch_prompts = prompts[idx: idx + bs]
+                batch_answers = answers[idx: idx + bs]
+                if not batch_prompts:
+                    break
 
-                    for ref_answer, output in zip(batch_answers, outputs):
-                        text = output.outputs[0].text.strip()
-                        total_tokens_ref["count"] += len(
-                            output.outputs[0].token_ids
-                        )
-                        try:
-                            pred = int([c for c in text if c.isdigit()][0])
-                        except Exception:
-                            pred = -1
-                        if pred == ref_answer:
-                            correct += 1
-                        total_samples += 1
+                outputs = llm.generate(batch_prompts, sampling_params)
 
-                    idx += bs
-
-                elapsed_time = time.time() - start_time
-
-                # Stop logging
-                stop_flag["stop"] = True
-                gpu_thread.join()
-                ipmi_thread.join()
-
-                accuracy = (
-                    (correct / total_samples) * 100.0
-                    if total_samples > 0
-                    else 0.0
-                )
-                tokens_per_sec = (
-                    total_tokens_ref["count"] / elapsed_time
-                    if elapsed_time > 0
-                    else 0.0
-                )
-
-                # Aggregate GPU stats
-                if gpu_log:
-                    gpu_count = len(gpu_log[0][1])
-                    per_gpu_power = [
-                        mean([p[i] for _, p, _, _, _ in gpu_log])
-                        for i in range(gpu_count)
-                    ]
-                    per_gpu_util = [
-                        mean([u[i] for _, _, u, _, _ in gpu_log])
-                        for i in range(gpu_count)
-                    ]
-                    avg_total_gpu_power = mean(
-                        [sum(p) for _, p, _, _, _ in gpu_log]
+                for ref_answer, output in zip(batch_answers, outputs):
+                    text = output.outputs[0].text.strip()
+                    total_tokens_ref["count"] += len(
+                        output.outputs[0].token_ids
                     )
-                    avg_total_gpu_util = mean(
-                        [mean(u) for _, _, u, _, _ in gpu_log]
-                    )
-                    total_gpu_energy_Wh = avg_total_gpu_power * (
-                        elapsed_time / 3600.0
-                    )
-                else:
-                    per_gpu_power = []
-                    per_gpu_util = []
-                    avg_total_gpu_power = 0.0
-                    avg_total_gpu_util = 0.0
-                    total_gpu_energy_Wh = 0.0
+                    try:
+                        pred = int([c for c in text if c.isdigit()][0])
+                    except Exception:
+                        pred = -1
+                    if pred == ref_answer:
+                        correct += 1
+                    total_samples += 1
 
-                tokens_per_watt_gpu = (
-                    tokens_per_sec / avg_total_gpu_power
-                    if avg_total_gpu_power > 0
-                    else 0.0
+                idx += bs
+
+            elapsed_time = time.time() - start_time
+
+            # Stop logging
+            stop_flag["stop"] = True
+            gpu_thread.join()
+            ipmi_thread.join()
+
+            accuracy = (
+                (correct / total_samples) * 100.0
+                if total_samples > 0
+                else 0.0
+            )
+            tokens_per_sec = (
+                total_tokens_ref["count"] / elapsed_time
+                if elapsed_time > 0
+                else 0.0
+            )
+
+            # Aggregate GPU stats
+            if gpu_log:
+                gpu_count = len(gpu_log[0][1])
+                per_gpu_power = [
+                    mean([p[i] for _, p, _, _, _ in gpu_log])
+                    for i in range(gpu_count)
+                ]
+                per_gpu_util = [
+                    mean([u[i] for _, _, u, _, _ in gpu_log])
+                    for i in range(gpu_count)
+                ]
+                avg_total_gpu_power = mean(
+                    [sum(p) for _, p, _, _, _ in gpu_log]
                 )
+                avg_total_gpu_util = mean(
+                    [mean(u) for _, _, u, _, _ in gpu_log]
+                )
+                total_gpu_energy_Wh = avg_total_gpu_power * (
+                    elapsed_time / 3600.0
+                )
+            else:
+                per_gpu_power = []
+                per_gpu_util = []
+                avg_total_gpu_power = 0.0
+                avg_total_gpu_util = 0.0
+                total_gpu_energy_Wh = 0.0
 
-                # Aggregate IPMI stats
-                if ipmi_log:
-                    avg_sys_power = mean([sys for _, sys, *_ in ipmi_log])
-                    avg_cpu_power = mean([cpu for _, _, cpu, *_ in ipmi_log])
-                    avg_mem_power = mean([mem for _, _, _, mem, *_ in ipmi_log])
-                    avg_gpu_board_power = mean(
-                        [g for _, _, _, _, g, _ in ipmi_log]
+            tokens_per_watt_gpu = (
+                tokens_per_sec / avg_total_gpu_power
+                if avg_total_gpu_power > 0
+                else 0.0
+            )
+
+            # Aggregate IPMI stats
+            if ipmi_log:
+                avg_sys_power = mean([sys for _, sys, *_ in ipmi_log])
+                avg_cpu_power = mean([cpu for _, _, cpu, *_ in ipmi_log])
+                avg_mem_power = mean([mem for _, _, _, mem, *_ in ipmi_log])
+                avg_gpu_board_power = mean(
+                    [g for _, _, _, _, g, _ in ipmi_log]
+                )
+                avg_riser1_power = mean(
+                    [r for _, _, _, _, _, r in ipmi_log]
+                )
+                total_sys_energy_Wh = avg_sys_power * (
+                    elapsed_time / 3600.0
+                )
+            else:
+                avg_sys_power = 0.0
+                avg_cpu_power = 0.0
+                avg_mem_power = 0.0
+                avg_gpu_board_power = 0.0
+                avg_riser1_power = 0.0
+                total_sys_energy_Wh = 0.0
+
+            tokens_per_watt_sys = (
+                tokens_per_sec / avg_sys_power
+                if avg_sys_power > 0
+                else 0.0
+            )
+
+            # Save summary row
+            summary_results.append(
+                [
+                    tp,                   # 0
+                    cap_label,            # 1
+                    bs,                   # 2
+                    accuracy,             # 3
+                    tokens_per_sec,       # 4
+                    avg_total_gpu_power,  # 5
+                    per_gpu_power,        # 6
+                    avg_total_gpu_util,   # 7
+                    per_gpu_util,         # 8
+                    total_gpu_energy_Wh,  # 9
+                    tokens_per_watt_gpu,  # 10
+                    avg_sys_power,        # 11
+                    avg_cpu_power,        # 12
+                    avg_mem_power,        # 13
+                    avg_gpu_board_power,  # 14
+                    avg_riser1_power,     # 15
+                    total_sys_energy_Wh,  # 16
+                    tokens_per_watt_sys,  # 17
+                    elapsed_time,         # 18
+                ]
+            )
+
+            # Save GPU time-series CSV
+            gpu_csv = os.path.join(
+                args.out_dir,
+                f"{args.model.replace('/', '_')}_tp{tp}_cap{cap}_bs{bs}_gpu_timeseries.csv",
+            )
+            if gpu_log:
+                gpu_count = len(gpu_log[0][1])
+                with open(gpu_csv, "w", newline="") as f:
+                    writer = csv.writer(f)
+                    header = (
+                        ["Timestamp"]
+                        + [f"GPU{i}_Power_W" for i in range(gpu_count)]
+                        + [f"GPU{i}_Util_%" for i in range(gpu_count)]
+                        + ["Total_Tokens", "Tokens_per_s"]
                     )
-                    avg_riser1_power = mean(
-                        [r for _, _, _, _, _, r in ipmi_log]
-                    )
-                    total_sys_energy_Wh = avg_sys_power * (
-                        elapsed_time / 3600.0
-                    )
-                else:
-                    avg_sys_power = 0.0
-                    avg_cpu_power = 0.0
-                    avg_mem_power = 0.0
-                    avg_gpu_board_power = 0.0
-                    avg_riser1_power = 0.0
-                    total_sys_energy_Wh = 0.0
-
-                tokens_per_watt_sys = (
-                    tokens_per_sec / avg_sys_power
-                    if avg_sys_power > 0
-                    else 0.0
-                )
-
-                # Save summary row
-                summary_results.append(
-                    [
-                        tp,                   # 0
-                        cap_label,            # 1
-                        bs,                   # 2
-                        accuracy,             # 3
-                        tokens_per_sec,       # 4
-                        avg_total_gpu_power,  # 5
-                        per_gpu_power,        # 6
-                        avg_total_gpu_util,   # 7
-                        per_gpu_util,         # 8
-                        total_gpu_energy_Wh,  # 9
-                        tokens_per_watt_gpu,  # 10
-                        avg_sys_power,        # 11
-                        avg_cpu_power,        # 12
-                        avg_mem_power,        # 13
-                        avg_gpu_board_power,  # 14
-                        avg_riser1_power,     # 15
-                        total_sys_energy_Wh,  # 16
-                        tokens_per_watt_sys,  # 17
-                        elapsed_time,         # 18
-                    ]
-                )
-
-                # Save GPU time-series CSV
-                gpu_csv = os.path.join(
-                    args.out_dir,
-                    f"{args.model.replace('/', '_')}_tp{tp}_cap{cap}_bs{bs}_gpu_timeseries.csv",
-                )
-                if gpu_log:
-                    gpu_count = len(gpu_log[0][1])
-                    with open(gpu_csv, "w", newline="") as f:
-                        writer = csv.writer(f)
-                        header = (
-                            ["Timestamp"]
-                            + [f"GPU{i}_Power_W" for i in range(gpu_count)]
-                            + [f"GPU{i}_Util_%" for i in range(gpu_count)]
-                            + ["Total_Tokens", "Tokens_per_s"]
-                        )
-                        writer.writerow(header)
-                        for ts, powers, utils, total_toks, tps in gpu_log:
-                            writer.writerow(
-                                [ts] + powers + utils + [total_toks, tps]
-                            )
-
-                # Save IPMI time-series CSV
-                ipmi_csv = os.path.join(
-                    args.out_dir,
-                    f"{args.model.replace('/', '_')}_tp{tp}_cap{cap}_bs{bs}_ipmi_timeseries.csv",
-                )
-                if ipmi_log:
-                    with open(ipmi_csv, "w", newline="") as f:
-                        writer = csv.writer(f)
+                    writer.writerow(header)
+                    for ts, powers, utils, total_toks, tps in gpu_log:
                         writer.writerow(
-                            [
-                                "Timestamp",
-                                "Sys_Power_W",
-                                "CPU_Power_W",
-                                "Mem_Power_W",
-                                "GPU_Board_Power_W",
-                                "Riser1_Power_W",
-                            ]
+                            [ts] + powers + utils + [total_toks, tps]
                         )
-                        for ts, sys_p, cpu_p, mem_p, gpu_b_p, riser_p in ipmi_log:
-                            writer.writerow(
-                                [ts, sys_p, cpu_p, mem_p, gpu_b_p, riser_p]
-                            )
 
-                # Plots
-                plot_tokens_timeseries(
-                    gpu_log, args.model, tp, cap, bs, args.out_dir
-                )
-                plot_power_timeseries(
-                    gpu_log, args.model, tp, cap, bs, args.out_dir
-                )
-                plot_gpu_vs_system_power_overlay(
-                    gpu_log, ipmi_log, args.model, tp, cap, bs, args.out_dir
-                )
+            # Save IPMI time-series CSV
+            ipmi_csv = os.path.join(
+                args.out_dir,
+                f"{args.model.replace('/', '_')}_tp{tp}_cap{cap}_bs{bs}_ipmi_timeseries.csv",
+            )
+            if ipmi_log:
+                with open(ipmi_csv, "w", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(
+                        [
+                            "Timestamp",
+                            "Sys_Power_W",
+                            "CPU_Power_W",
+                            "Mem_Power_W",
+                            "GPU_Board_Power_W",
+                            "Riser1_Power_W",
+                        ]
+                    )
+                    for ts, sys_p, cpu_p, mem_p, gpu_b_p, riser_p in ipmi_log:
+                        writer.writerow(
+                            [ts, sys_p, cpu_p, mem_p, gpu_b_p, riser_p]
+                        )
 
-                # Cleanup
-                del llm
-                gc.collect()
-                torch.cuda.empty_cache()
-                time.sleep(2)
+            # Plots
+            plot_tokens_timeseries(
+                gpu_log, args.model, tp, cap, bs, args.out_dir
+            )
+            plot_power_timeseries(
+                gpu_log, args.model, tp, cap, bs, args.out_dir
+            )
+            plot_gpu_vs_system_power_overlay(
+                gpu_log, ipmi_log, args.model, tp, cap, bs, args.out_dir
+            )
+
+            # Cleanup
+            del llm
+            gc.collect()
+            torch.cuda.empty_cache()
+            time.sleep(2)
 
     # Restore default power caps
     set_power_cap(0)

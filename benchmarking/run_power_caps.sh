@@ -11,8 +11,8 @@ MODELS=(
    # "openai-community/gpt2"
 )
 BATCH_SIZES="64"
-TP_SIZES="4"
-DP_SIZES="1"
+TP_SIZES="2"
+DP_SIZES="2"
 POWER_CAPS="400" # 350 300 250 200 150 100"
 GPU_UTIL=0.90
 MAX_LEN=1024
@@ -34,11 +34,10 @@ for MODEL in "${MODELS[@]}"; do
     echo "[INFO] Starting benchmarks for model: $MODEL"
     echo "============================"
 
-    python3 "$BENCH_SCRIPT" \
+    CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=$DP_SIZE "$BENCH_SCRIPT" \
         --model "$MODEL" \
         --batch-sizes $BATCH_SIZES \
         --tensor-parallel-sizes $TP_SIZES \
-        --data-parallel-sizes $DP_SIZES \
 	    --max-len $MAX_LEN \
         --power-caps $POWER_CAPS \
         --gpu-util $GPU_UTIL \
