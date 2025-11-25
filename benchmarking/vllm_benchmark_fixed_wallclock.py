@@ -382,6 +382,13 @@ def main():
         help="List of tensor parallel sizes to sweep",
     )
     parser.add_argument(
+        "--data-parallel-sizes",
+        type=int,
+        nargs="+",
+        default=[1],
+        help="List of data parallel sizes to sweep",
+    )
+    parser.add_argument(
         "--subset",
         type=str,
         default="validation",
@@ -421,6 +428,12 @@ def main():
         default=".",
         help="Output directory for CSVs and plots.",
     )
+    parser.add_argument(
+        "--enable-ep",
+        action="store_true",
+        default=False,
+        help="Enable endpoint/EP mode when constructing the vLLM LLM instance.",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -457,24 +470,27 @@ def main():
     ############################################
     # Run benchmarks
     ############################################
-    for tp in args.tensor_parallel_sizes:
-        for cap in args.power_caps:
-            set_power_cap(cap)
-            time.sleep(1)  # give driver a moment
-
+    for dp in args.data_parallel_sizes:
+        for tp in args.tensor_parallel_sizes:
+            for cap in args.power_caps:
+                set_power_cap(cap)
+                time.sleep(1)  # give driver a moment
             for bs in args.batch_sizes:
                 cap_label = cap if cap > 0 else "Default"
                 print(
                     f"\n=== TP {tp} | Power cap {cap_label} W | "
                     f"Batch size {bs} | Time budget {args.time_budget}s ==="
+                    f"Expert Parallel: {args.enable_ep}"
                 )
 
                 llm = LLM(
                     model=args.model,
                     tensor_parallel_size=tp,
+                    data_parallel_size=dp,
                     gpu_memory_utilization=args.gpu_util,
                     max_model_len=args.max_len,
                     trust_remote_code=True,
+                    enable_expert_parallel=args.enable_ep,
                 )
                 sampling_params = SamplingParams(
                     temperature=0.0,

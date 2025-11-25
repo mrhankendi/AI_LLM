@@ -11,17 +11,20 @@ MODELS=(
    # "meta-llama/Llama-2-7b-hf"
    # "openai-community/gpt2"
 )
-BATCH_SIZES="1 64"
+BATCH_SIZES="64"
 TP_SIZES="4"
+DP_SIZES="1"
 POWER_CAPS="400" # 350 300 250 200 150 100"
 GPU_UTIL=0.90
 MAX_LEN=1024
-SUBSET="validation"  # smaller subset for faster runs
+ENABLE_EP=true
+SUBSET="validation[:500]"  # smaller subset for faster runs
 
 # Path to your Python benchmark script
 BENCH_SCRIPT="moe_power_cap_hellaswag_2.py"
 BENCH_SCRIPT="vllm_benchmark.py"
 BENCH_SCRIPT="vllm_benchmark_fixed_wallclock.py"
+
 # Path to your GPU cleanup script
 CLEAN_SCRIPT="../tools/kill_GPU_jobs.sh"
 
@@ -38,11 +41,13 @@ for MODEL in "${MODELS[@]}"; do
         --model "$MODEL" \
         --batch-sizes $BATCH_SIZES \
         --tensor-parallel-sizes $TP_SIZES \
-	--max-len $MAX_LEN \
+        --data-parallel-sizes $DP_SIZES \
+	    --max-len $MAX_LEN \
         --power-caps $POWER_CAPS \
         --gpu-util $GPU_UTIL \
         --subset $SUBSET \
-	--time-budget 300
+	    --time-budget 300 \
+        --enable-ep $ENABLE_EP
 
     echo "[INFO] Cleaning up GPU memory..."
     bash "$CLEAN_SCRIPT"
