@@ -1,5 +1,4 @@
 #!/bin/bash
-# run_moe_benchmarks.sh
 # Loop over multiple models, TP sizes, and power caps for benchmarking
 
 # === CONFIGURATION ===
@@ -21,8 +20,6 @@ ENABLE_EP=true
 SUBSET="validation[:500]"  # smaller subset for faster runs
 
 # Path to your Python benchmark script
-BENCH_SCRIPT="moe_power_cap_hellaswag_2.py"
-BENCH_SCRIPT="vllm_benchmark.py"
 BENCH_SCRIPT="vllm_benchmark_fixed_wallclock.py"
 
 # Path to your GPU cleanup script

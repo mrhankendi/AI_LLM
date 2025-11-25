@@ -430,11 +430,22 @@ def main():
     )
     parser.add_argument(
         "--enable-ep",
-        action="store_true",
-        default=False,
-        help="Enable endpoint/EP mode when constructing the vLLM LLM instance.",
+        nargs="?",
+        const="true",
+        default="false",
+        help=(
+            "Enable endpoint/EP mode when constructing the vLLM LLM instance. "
+            "Accepts no value (enable), or an explicit value: true/false."
+        ),
     )
     args = parser.parse_args()
+
+    # Normalize --enable-ep so it supports: `--enable-ep`, `--enable-ep true`,
+    # and `--enable-ep false` (the run script may expand to `--enable-ep true`).
+    try:
+        args.enable_ep = str(args.enable_ep).lower() in ("1", "true", "yes", "y")
+    except Exception:
+        args.enable_ep = False
 
     os.makedirs(args.out_dir, exist_ok=True)
 
