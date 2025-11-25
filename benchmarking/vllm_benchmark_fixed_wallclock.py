@@ -14,7 +14,7 @@ import os
 import math
 
 ############################################
-# NVML (GPU power + utilization)
+# NVML (GPU power + utilization + extras)
 ############################################
 try:
     import pynvml
@@ -47,9 +47,13 @@ def shutdown_nvml():
 ############################################
 # Power + Utilization + Tokens/sec logging
 ############################################
-def log_gpu_power_util(gpu_log, stop_flag, total_tokens_ref,
-                       interval=0.5):
-    """High-frequency GPU logging via NVML."""
+def log_gpu_power_util(
+    gpu_log,
+    stop_flag,
+    total_tokens_ref,
+    interval=0.5
+):
+    """High-frequency GPU logging via NVML with extra metrics."""
     if not NVML_AVAILABLE or nvml_device_count == 0:
         print("[WARN] NVML not available, skipping GPU power/util logging.")
         return
@@ -62,27 +66,116 @@ def log_gpu_power_util(gpu_log, stop_flag, total_tokens_ref,
         try:
             powers = []
             utils = []
+            mem_utils = []
+            gfx_clocks = []
+            mem_clocks = []
+            perf_states = []
+            throttle_reasons = []
+            pcie_tx = []
+            pcie_rx = []
+
             for h in nvml_handles:
+                # Power
                 try:
                     p_mw = pynvml.nvmlDeviceGetPowerUsage(h)  # milliwatts
                     p_w = p_mw / 1000.0
                 except pynvml.NVMLError:
                     p_w = float("nan")
 
+                # Utilization
                 try:
-                    util = pynvml.nvmlDeviceGetUtilizationRates(h).gpu
+                    util_struct = pynvml.nvmlDeviceGetUtilizationRates(h)
+                    util = util_struct.gpu
+                    mem_util = util_struct.memory
                 except pynvml.NVMLError:
                     util = float("nan")
+                    mem_util = float("nan")
+
+                # Clocks
+                try:
+                    gfx_clock = pynvml.nvmlDeviceGetClockInfo(
+                        h, pynvml.NVML_CLOCK_SM
+                    )
+                except pynvml.NVMLError:
+                    gfx_clock = float("nan")
+
+                try:
+                    mem_clock = pynvml.nvmlDeviceGetClockInfo(
+                        h, pynvml.NVML_CLOCK_MEM
+                    )
+                except pynvml.NVMLError:
+                    mem_clock = float("nan")
+
+                # Performance state
+                try:
+                    pstate = pynvml.nvmlDeviceGetPerformanceState(h)
+                except pynvml.NVMLError:
+                    pstate = float("nan")
+
+                # Throttle reasons (bitmask)
+                try:
+                    thr = pynvml.nvmlDeviceGetCurrentClocksThrottleReasons(h)
+                except pynvml.NVMLError:
+                    thr = 0
+
+                # PCIe throughput (KB/s -> MB/s)
+                try:
+                    tx_kb = pynvml.nvmlDeviceGetPcieThroughput(
+                        h, pynvml.NVML_PCIE_UTIL_TX_BYTES
+                    )
+                    rx_kb = pynvml.nvmlDeviceGetPcieThroughput(
+                        h, pynvml.NVML_PCIE_UTIL_RX_BYTES
+                    )
+                    tx_mb = tx_kb / 1024.0
+                    rx_mb = rx_kb / 1024.0
+                except pynvml.NVMLError:
+                    tx_mb = float("nan")
+                    rx_mb = float("nan")
 
                 powers.append(p_w)
                 utils.append(util)
+                mem_utils.append(mem_util)
+                gfx_clocks.append(gfx_clock)
+                mem_clocks.append(mem_clock)
+                perf_states.append(pstate)
+                throttle_reasons.append(thr)
+                pcie_tx.append(tx_mb)
+                pcie_rx.append(rx_mb)
 
             current_tokens = total_tokens_ref["count"]
             delta_tokens = current_tokens - last_tokens
             delta_time = now - last_time
             tps = delta_tokens / delta_time if delta_time > 0 else 0.0
 
-            gpu_log.append((now, powers, utils, current_tokens, tps))
+            # Structure:
+            # 0: ts
+            # 1: powers[list]
+            # 2: utils[list]
+            # 3: mem_utils[list]
+            # 4: gfx_clocks[list]
+            # 5: mem_clocks[list]
+            # 6: perf_states[list]
+            # 7: throttle_reasons[list]
+            # 8: pcie_tx[list]
+            # 9: pcie_rx[list]
+            # 10: total_tokens
+            # 11: tokens_per_s
+            gpu_log.append(
+                (
+                    now,
+                    powers,
+                    utils,
+                    mem_utils,
+                    gfx_clocks,
+                    mem_clocks,
+                    perf_states,
+                    throttle_reasons,
+                    pcie_tx,
+                    pcie_rx,
+                    current_tokens,
+                    tps,
+                )
+            )
 
             last_tokens = current_tokens
             last_time = now
@@ -186,8 +279,8 @@ def plot_tokens_timeseries(gpu_log, model_id, tp, cap, bs, out_dir):
     if not gpu_log:
         return
     t0 = gpu_log[0][0]
-    times = [ts - t0 for ts, *_ in gpu_log]
-    tps_vals = [tps for *_, tps in gpu_log]
+    times = [entry[0] - t0 for entry in gpu_log]
+    tps_vals = [entry[11] for entry in gpu_log]  # tokens_per_s
 
     plt.figure()
     plt.plot(times, tps_vals, label="Tokens/sec")
@@ -212,8 +305,8 @@ def plot_power_timeseries(gpu_log, model_id, tp, cap, bs, out_dir):
 
     plt.figure()
     for i in range(gpu_count):
-        powers = [p[i] for _, p, *_ in gpu_log]
-        times = [ts - t0 for ts, *_ in gpu_log]
+        powers = [entry[1][i] for entry in gpu_log]  # powers list at index 1
+        times = [entry[0] - t0 for entry in gpu_log]
         plt.plot(times, powers, label=f"GPU {i}")
     plt.xlabel("Time (s)")
     plt.ylabel("Power (W)")
@@ -228,14 +321,68 @@ def plot_power_timeseries(gpu_log, model_id, tp, cap, bs, out_dir):
     plt.close()
 
 
+def plot_gpu_memutil_timeseries(gpu_log, model_id, tp, cap, bs, out_dir):
+    """Per-GPU memory utilization over time."""
+    if not gpu_log:
+        return
+    t0 = gpu_log[0][0]
+    gpu_count = len(gpu_log[0][1])
+
+    plt.figure()
+    for i in range(gpu_count):
+        mem_utils = [entry[3][i] for entry in gpu_log]  # mem_utils list at index 3
+        times = [entry[0] - t0 for entry in gpu_log]
+        plt.plot(times, mem_utils, label=f"GPU {i}")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Memory Utilization (%)")
+    plt.title(
+        f"Per-GPU Memory Utilization Over Time\n{model_id} TP={tp} Cap={cap}W BS={bs}"
+    )
+    plt.grid(True)
+    plt.legend()
+    fname = os.path.join(
+        out_dir,
+        f"{model_id.replace('/', '_')}_tp{tp}_cap{cap}_bs{bs}_memutil_all_gpus.png",
+    )
+    plt.savefig(fname)
+    plt.close()
+
+
+def plot_gpu_sm_clock_timeseries(gpu_log, model_id, tp, cap, bs, out_dir):
+    """Per-GPU SM/graphics clock over time."""
+    if not gpu_log:
+        return
+    t0 = gpu_log[0][0]
+    gpu_count = len(gpu_log[0][1])
+
+    plt.figure()
+    for i in range(gpu_count):
+        clocks = [entry[4][i] for entry in gpu_log]  # gfx_clocks list at index 4
+        times = [entry[0] - t0 for entry in gpu_log]
+        plt.plot(times, clocks, label=f"GPU {i}")
+    plt.xlabel("Time (s)")
+    plt.ylabel("SM/Graphics Clock (MHz)")
+    plt.title(
+        f"Per-GPU SM Clock Over Time\n{model_id} TP={tp} Cap={cap}W BS={bs}"
+    )
+    plt.grid(True)
+    plt.legend()
+    fname = os.path.join(
+        out_dir,
+        f"{model_id.replace('/', '_')}_tp{tp}_cap{cap}_bs{bs}_smclock_all_gpus.png",
+    )
+    plt.savefig(fname)
+    plt.close()
+
+
 def plot_gpu_vs_system_power_overlay(gpu_log, ipmi_log, model_id, tp, cap, bs, out_dir):
     if not gpu_log or not ipmi_log:
         return
 
     t0 = min(gpu_log[0][0], ipmi_log[0][0])
 
-    gpu_times = [ts - t0 for ts, *_ in gpu_log]
-    gpu_total_power = [sum(p) for _, p, *_ in gpu_log]
+    gpu_times = [entry[0] - t0 for entry in gpu_log]
+    gpu_total_power = [sum(entry[1]) for entry in gpu_log]
 
     ipmi_times = [ts - t0 for ts, *_ in ipmi_log]
     sys_powers = [sys for _, sys, *_ in ipmi_log]
@@ -382,13 +529,6 @@ def main():
         help="List of tensor parallel sizes to sweep",
     )
     parser.add_argument(
-        "--data-parallel-sizes",
-        type=int,
-        nargs="+",
-        default=[1],
-        help="List of data parallel sizes to sweep",
-    )
-    parser.add_argument(
         "--subset",
         type=str,
         default="validation",
@@ -428,24 +568,7 @@ def main():
         default=".",
         help="Output directory for CSVs and plots.",
     )
-    parser.add_argument(
-        "--enable-ep",
-        nargs="?",
-        const="true",
-        default="false",
-        help=(
-            "Enable endpoint/EP mode when constructing the vLLM LLM instance. "
-            "Accepts no value (enable), or an explicit value: true/false."
-        ),
-    )
     args = parser.parse_args()
-
-    # Normalize --enable-ep so it supports: `--enable-ep`, `--enable-ep true`,
-    # and `--enable-ep false` (the run script may expand to `--enable-ep true`).
-    try:
-        args.enable_ep = str(args.enable_ep).lower() in ("1", "true", "yes", "y")
-    except Exception:
-        args.enable_ep = False
 
     os.makedirs(args.out_dir, exist_ok=True)
 
@@ -481,27 +604,24 @@ def main():
     ############################################
     # Run benchmarks
     ############################################
-    for dp in args.data_parallel_sizes:
-        for tp in args.tensor_parallel_sizes:
-            for cap in args.power_caps:
-                set_power_cap(cap)
-                time.sleep(1)  # give driver a moment
+    for tp in args.tensor_parallel_sizes:
+        for cap in args.power_caps:
+            set_power_cap(cap)
+            time.sleep(1)  # give driver a moment
+
             for bs in args.batch_sizes:
                 cap_label = cap if cap > 0 else "Default"
                 print(
                     f"\n=== TP {tp} | Power cap {cap_label} W | "
                     f"Batch size {bs} | Time budget {args.time_budget}s ==="
-                    f"Expert Parallel: {args.enable_ep}"
                 )
 
                 llm = LLM(
                     model=args.model,
                     tensor_parallel_size=tp,
-                    data_parallel_size=dp,
                     gpu_memory_utilization=args.gpu_util,
                     max_model_len=args.max_len,
                     trust_remote_code=True,
-                    enable_expert_parallel=args.enable_ep,
                 )
                 sampling_params = SamplingParams(
                     temperature=0.0,
@@ -587,28 +707,79 @@ def main():
                 # Aggregate GPU stats
                 if gpu_log:
                     gpu_count = len(gpu_log[0][1])
+
+                    # Average per-GPU metrics over time
                     per_gpu_power = [
-                        mean([p[i] for _, p, _, _, _ in gpu_log])
+                        mean([entry[1][i] for entry in gpu_log])
                         for i in range(gpu_count)
                     ]
                     per_gpu_util = [
-                        mean([u[i] for _, _, u, _, _ in gpu_log])
+                        mean([entry[2][i] for entry in gpu_log])
                         for i in range(gpu_count)
                     ]
+                    per_gpu_mem_util = [
+                        mean([entry[3][i] for entry in gpu_log])
+                        for i in range(gpu_count)
+                    ]
+                    per_gpu_sm_clock = [
+                        mean([entry[4][i] for entry in gpu_log])
+                        for i in range(gpu_count)
+                    ]
+                    per_gpu_mem_clock = [
+                        mean([entry[5][i] for entry in gpu_log])
+                        for i in range(gpu_count)
+                    ]
+                    per_gpu_pstate = [
+                        mean([entry[6][i] for entry in gpu_log])
+                        for i in range(gpu_count)
+                    ]
+
                     avg_total_gpu_power = mean(
-                        [sum(p) for _, p, _, _, _ in gpu_log]
+                        [sum(entry[1]) for entry in gpu_log]
                     )
                     avg_total_gpu_util = mean(
-                        [mean(u) for _, _, u, _, _ in gpu_log]
+                        [mean(entry[2]) for entry in gpu_log]
                     )
+                    avg_total_gpu_mem_util = mean(
+                        [mean(entry[3]) for entry in gpu_log]
+                    )
+                    avg_total_sm_clock = mean(
+                        [mean(entry[4]) for entry in gpu_log]
+                    )
+                    avg_total_mem_clock = mean(
+                        [mean(entry[5]) for entry in gpu_log]
+                    )
+                    avg_total_pstate = mean(
+                        [mean(entry[6]) for entry in gpu_log]
+                    )
+
+                    # Fraction of samples where any GPU had non-zero throttle reasons
+                    throttle_samples = sum(
+                        1 for entry in gpu_log
+                        if any(tr != 0 for tr in entry[7])
+                    )
+                    throttle_fraction_any = (
+                        throttle_samples / len(gpu_log)
+                        if len(gpu_log) > 0 else 0.0
+                    )
+
                     total_gpu_energy_Wh = avg_total_gpu_power * (
                         elapsed_time / 3600.0
                     )
                 else:
                     per_gpu_power = []
                     per_gpu_util = []
+                    per_gpu_mem_util = []
+                    per_gpu_sm_clock = []
+                    per_gpu_mem_clock = []
+                    per_gpu_pstate = []
                     avg_total_gpu_power = 0.0
                     avg_total_gpu_util = 0.0
+                    avg_total_gpu_mem_util = 0.0
+                    avg_total_sm_clock = 0.0
+                    avg_total_mem_clock = 0.0
+                    avg_total_pstate = 0.0
+                    throttle_fraction_any = 0.0
                     total_gpu_energy_Wh = 0.0
 
                 tokens_per_watt_gpu = (
@@ -645,7 +816,7 @@ def main():
                     else 0.0
                 )
 
-                # Save summary row
+                # Save summary row (existing fields + appended extras)
                 summary_results.append(
                     [
                         tp,                   # 0
@@ -667,6 +838,11 @@ def main():
                         total_sys_energy_Wh,  # 16
                         tokens_per_watt_sys,  # 17
                         elapsed_time,         # 18
+                        avg_total_gpu_mem_util,   # 19
+                        avg_total_sm_clock,       # 20
+                        avg_total_mem_clock,      # 21
+                        avg_total_pstate,         # 22
+                        throttle_fraction_any,    # 23
                     ]
                 )
 
@@ -679,17 +855,47 @@ def main():
                     gpu_count = len(gpu_log[0][1])
                     with open(gpu_csv, "w", newline="") as f:
                         writer = csv.writer(f)
-                        header = (
-                            ["Timestamp"]
-                            + [f"GPU{i}_Power_W" for i in range(gpu_count)]
-                            + [f"GPU{i}_Util_%" for i in range(gpu_count)]
-                            + ["Total_Tokens", "Tokens_per_s"]
-                        )
+                        # Header
+                        header = ["Timestamp"]
+                        header += [f"GPU{i}_Power_W" for i in range(gpu_count)]
+                        header += [f"GPU{i}_Util_%" for i in range(gpu_count)]
+                        header += [f"GPU{i}_MemUtil_%" for i in range(gpu_count)]
+                        header += [f"GPU{i}_GfxClock_MHz" for i in range(gpu_count)]
+                        header += [f"GPU{i}_MemClock_MHz" for i in range(gpu_count)]
+                        header += [f"GPU{i}_PState" for i in range(gpu_count)]
+                        header += [f"GPU{i}_ThrottleReasons" for i in range(gpu_count)]
+                        header += [f"GPU{i}_PCIe_TX_MBps" for i in range(gpu_count)]
+                        header += [f"GPU{i}_PCIe_RX_MBps" for i in range(gpu_count)]
+                        header += ["Total_Tokens", "Tokens_per_s"]
                         writer.writerow(header)
-                        for ts, powers, utils, total_toks, tps in gpu_log:
-                            writer.writerow(
-                                [ts] + powers + utils + [total_toks, tps]
-                            )
+
+                        for entry in gpu_log:
+                            (
+                                ts,
+                                powers,
+                                utils,
+                                mem_utils,
+                                gfx_clocks,
+                                mem_clocks,
+                                perf_states,
+                                thr_reasons,
+                                pcie_tx,
+                                pcie_rx,
+                                total_toks,
+                                tps_val,
+                            ) = entry
+                            row = [ts]
+                            row += list(powers)
+                            row += list(utils)
+                            row += list(mem_utils)
+                            row += list(gfx_clocks)
+                            row += list(mem_clocks)
+                            row += list(perf_states)
+                            row += list(thr_reasons)
+                            row += list(pcie_tx)
+                            row += list(pcie_rx)
+                            row += [total_toks, tps_val]
+                            writer.writerow(row)
 
                 # Save IPMI time-series CSV
                 ipmi_csv = os.path.join(
@@ -721,6 +927,12 @@ def main():
                 plot_power_timeseries(
                     gpu_log, args.model, tp, cap, bs, args.out_dir
                 )
+                plot_gpu_memutil_timeseries(
+                    gpu_log, args.model, tp, cap, bs, args.out_dir
+                )
+                plot_gpu_sm_clock_timeseries(
+                    gpu_log, args.model, tp, cap, bs, args.out_dir
+                )
                 plot_gpu_vs_system_power_overlay(
                     gpu_log, ipmi_log, args.model, tp, cap, bs, args.out_dir
                 )
@@ -745,11 +957,11 @@ def main():
         writer = csv.writer(f)
         writer.writerow(
             [
-                "Tensor Parallel Size",  # 0
-                "Power Cap (W)",         # 1
-                "Batch Size",            # 2
-                "Accuracy (%)",          # 3
-                "Tokens/s",              # 4
+                "Tensor Parallel Size",      # 0
+                "Power Cap (W)",             # 1
+                "Batch Size",                # 2
+                "Accuracy (%)",              # 3
+                "Tokens/s",                  # 4
                 "Avg GPU Total Power (W)",   # 5
                 "Per-GPU Power (W)",         # 6
                 "Avg GPU Util (%)",          # 7
@@ -764,6 +976,11 @@ def main():
                 "System Energy (Wh)",        # 16
                 "Tokens/s/W (System)",       # 17
                 "Elapsed Time (s)",          # 18
+                "Avg GPU Mem Util (%)",      # 19
+                "Avg GPU SM Clock (MHz)",    # 20
+                "Avg GPU Mem Clock (MHz)",   # 21
+                "Avg GPU Perf State",        # 22
+                "Throttle Fraction (Any)",   # 23
             ]
         )
         for row in summary_results:
@@ -879,4 +1096,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
