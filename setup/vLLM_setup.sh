@@ -37,3 +37,7 @@ python3 moe_power_cap_hellaswag.py \
   --gpu-util 0.9 \
   --max-len 1024 \
   --subset validation[:500]
+
+
+# Setup on SCC-501 L40S
+module load python3/3.13.8 

@@ -576,7 +576,7 @@ def main():
     # Load dataset (HellaSwag)
     ############################################
     print(f"[INFO] Loading HellaSwag split: {args.subset}")
-    dataset = load_dataset("hellaswag", split=args.subset)
+    dataset = load_dataset("Rowan/hellaswag", split=args.subset)
 
     prompts = []
     answers = []
